@@ -46,8 +46,8 @@ jobs:
           ref: ${{ steps.branch_name.outputs.branch_name }}
       - uses: actions/setup-java@v4
         with:
-          java-version: 11
-          distribution: zulu
+          java-version: 17
+          distribution: sapmachine
       - name: Install Groovy
         run: |
           sudo apt-get update

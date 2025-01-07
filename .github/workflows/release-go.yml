@@ -78,8 +78,8 @@ jobs:
       # Workaround for https://github.com/SAP/jenkins-library/issues/1723, build only works with jdk8 currently
       - uses: actions/setup-java@v4
         with:
-          java-version: 8
-          distribution: zulu
+          java-version: 17
+          distribution: sapmachine
       - name: Build and publish jar for consumption in unit tests
         run: mvn package
       - uses: SAP/project-piper-action@master
