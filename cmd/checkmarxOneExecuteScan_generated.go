@@ -31,6 +31,7 @@ type checkmarxOneExecuteScanOptions struct {
 	GeneratePdfReport                    bool     `json:"generatePdfReport,omitempty"`
 	GithubAPIURL                         string   `json:"githubApiUrl,omitempty"`
 	GithubToken                          string   `json:"githubToken,omitempty"`
+	ScanSummaryInPullRequest             bool     `json:"scanSummaryInPullRequest,omitempty"`
 	Incremental                          bool     `json:"incremental,omitempty"`
 	Owner                                string   `json:"owner,omitempty"`
 	GitBranch                            string   `json:"gitBranch,omitempty"`
@@ -51,9 +52,12 @@ type checkmarxOneExecuteScanOptions struct {
 	SourceEncoding                       string   `json:"sourceEncoding,omitempty"`
 	GroupName                            string   `json:"groupName,omitempty"`
 	ApplicationName                      string   `json:"applicationName,omitempty"`
+	ApplicationID                        string   `json:"applicationId,omitempty"`
+	ProjectID                            string   `json:"projectId,omitempty"`
 	ClientID                             string   `json:"clientId,omitempty"`
 	VerifyOnly                           bool     `json:"verifyOnly,omitempty"`
 	VulnerabilityThresholdEnabled        bool     `json:"vulnerabilityThresholdEnabled,omitempty"`
+	VulnerabilityThresholdCritical       int      `json:"vulnerabilityThresholdCritical,omitempty"`
 	VulnerabilityThresholdHigh           int      `json:"vulnerabilityThresholdHigh,omitempty"`
 	VulnerabilityThresholdMedium         int      `json:"vulnerabilityThresholdMedium,omitempty"`
 	VulnerabilityThresholdLow            int      `json:"vulnerabilityThresholdLow,omitempty"`
@@ -76,6 +80,13 @@ type checkmarxOneExecuteScanInflux struct {
 	}
 	checkmarxOne_data struct {
 		fields struct {
+			critical_issues                      int
+			critical_not_false_postive           int
+			critical_not_exploitable             int
+			critical_confirmed                   int
+			critical_urgent                      int
+			critical_proposed_not_exploitable    int
+			critical_to_verify                   int
 			high_issues                          int
 			high_not_false_postive               int
 			high_not_exploitable                 int
@@ -134,6 +145,13 @@ func (i *checkmarxOneExecuteScanInflux) persist(path, resourceName string) {
 		value       interface{}
 	}{
 		{valType: config.InfluxField, measurement: "step_data", name: "checkmarxOne", value: i.step_data.fields.checkmarxOne},
+		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "critical_issues", value: i.checkmarxOne_data.fields.critical_issues},
+		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "critical_not_false_postive", value: i.checkmarxOne_data.fields.critical_not_false_postive},
+		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "critical_not_exploitable", value: i.checkmarxOne_data.fields.critical_not_exploitable},
+		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "critical_confirmed", value: i.checkmarxOne_data.fields.critical_confirmed},
+		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "critical_urgent", value: i.checkmarxOne_data.fields.critical_urgent},
+		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "critical_proposed_not_exploitable", value: i.checkmarxOne_data.fields.critical_proposed_not_exploitable},
+		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "critical_to_verify", value: i.checkmarxOne_data.fields.critical_to_verify},
 		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "high_issues", value: i.checkmarxOne_data.fields.high_issues},
 		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "high_not_false_postive", value: i.checkmarxOne_data.fields.high_not_false_postive},
 		{valType: config.InfluxField, measurement: "checkmarxOne_data", name: "high_not_exploitable", value: i.checkmarxOne_data.fields.high_not_exploitable},
@@ -277,6 +295,17 @@ thresholds instead of ` + "`" + `percentage` + "`" + ` whereas we strongly recom
 				log.SetErrorCategory(log.ErrorConfiguration)
 				return err
 			}
+
+			// Set step error patterns for improved error detection
+			stepErrors := make([]log.StepError, len(metadata.Metadata.Errors))
+			for i, err := range metadata.Metadata.Errors {
+				stepErrors[i] = log.StepError{
+					Pattern:  err.Pattern,
+					Message:  err.Message,
+					Category: err.Category,
+				}
+			}
+			log.SetStepErrors(stepErrors)
 			log.RegisterSecret(stepConfig.GithubToken)
 			log.RegisterSecret(stepConfig.ClientSecret)
 			log.RegisterSecret(stepConfig.APIKey)
@@ -377,6 +406,7 @@ func addCheckmarxOneExecuteScanFlags(cmd *cobra.Command, stepConfig *checkmarxOn
 	cmd.Flags().BoolVar(&stepConfig.GeneratePdfReport, "generatePdfReport", true, "Whether to generate a PDF report of the analysis results or not")
 	cmd.Flags().StringVar(&stepConfig.GithubAPIURL, "githubApiUrl", `https://api.github.com`, "Set the GitHub API URL.")
 	cmd.Flags().StringVar(&stepConfig.GithubToken, "githubToken", os.Getenv("PIPER_githubToken"), "GitHub personal access token as per https://help.github.com/en/github/authenticating-to-github/creating-a-personal-access-token-for-the-command-line")
+	cmd.Flags().BoolVar(&stepConfig.ScanSummaryInPullRequest, "scanSummaryInPullRequest", true, "Whether the scan summary shall be added to the pull request as a comment or not. This is only applied if the step is executed in a pull request context. githubToken and githubApiUrl parameters must be set to allow the step to create the comment.")
 	cmd.Flags().BoolVar(&stepConfig.Incremental, "incremental", true, "Whether incremental scans are to be applied which optimizes the scan time but might reduce detection capabilities. Therefore full scans are still required from time to time and should be scheduled via `fullScansScheduled` and `fullScanCycle`")
 	cmd.Flags().StringVar(&stepConfig.Owner, "owner", os.Getenv("PIPER_owner"), "Set the GitHub organization.")
 	cmd.Flags().StringVar(&stepConfig.GitBranch, "gitBranch", os.Getenv("PIPER_gitBranch"), "Set the GitHub repository branch.")
@@ -397,14 +427,17 @@ func addCheckmarxOneExecuteScanFlags(cmd *cobra.Command, stepConfig *checkmarxOn
 	cmd.Flags().StringVar(&stepConfig.SourceEncoding, "sourceEncoding", `1`, "The source encoding to be used, if not set explicitly the project's default will be used  [Not yet supported]")
 	cmd.Flags().StringVar(&stepConfig.GroupName, "groupName", os.Getenv("PIPER_groupName"), "The full name of the group to which the newly created projects will be assigned")
 	cmd.Flags().StringVar(&stepConfig.ApplicationName, "applicationName", os.Getenv("PIPER_applicationName"), "The full name of the Checkmarx One application to which the newly created projects will be assigned")
+	cmd.Flags().StringVar(&stepConfig.ApplicationID, "applicationId", os.Getenv("PIPER_applicationId"), "The ID of the Checkmarx One application to which the newly created projects will be assigned. This parameter will take precedence over applicationName if both are provided.")
+	cmd.Flags().StringVar(&stepConfig.ProjectID, "projectId", os.Getenv("PIPER_projectId"), "The ID of the checkmarxOne project to scan into. This parameter will take precedence over projectName if both are provided.")
 	cmd.Flags().StringVar(&stepConfig.ClientID, "clientId", os.Getenv("PIPER_clientId"), "The username to authenticate")
 	cmd.Flags().BoolVar(&stepConfig.VerifyOnly, "verifyOnly", false, "Whether the step shall only apply verification checks or whether it does a full scan and check cycle")
 	cmd.Flags().BoolVar(&stepConfig.VulnerabilityThresholdEnabled, "vulnerabilityThresholdEnabled", true, "Whether the thresholds are enabled or not. If enabled the build will be set to `vulnerabilityThresholdResult` in case a specific threshold value is exceeded")
-	cmd.Flags().IntVar(&stepConfig.VulnerabilityThresholdHigh, "vulnerabilityThresholdHigh", 100, "The specific threshold for high severity findings")
-	cmd.Flags().IntVar(&stepConfig.VulnerabilityThresholdMedium, "vulnerabilityThresholdMedium", 100, "The specific threshold for medium severity findings")
-	cmd.Flags().IntVar(&stepConfig.VulnerabilityThresholdLow, "vulnerabilityThresholdLow", 10, "The specific threshold for low severity findings")
-	cmd.Flags().BoolVar(&stepConfig.VulnerabilityThresholdLowPerQuery, "vulnerabilityThresholdLowPerQuery", false, "Flag to activate/deactivate the threshold of low severity findings per query")
-	cmd.Flags().IntVar(&stepConfig.VulnerabilityThresholdLowPerQueryMax, "vulnerabilityThresholdLowPerQueryMax", 10, "Upper threshold of low severity findings per query (in absolute number)")
+	cmd.Flags().IntVar(&stepConfig.VulnerabilityThresholdCritical, "vulnerabilityThresholdCritical", 100, "The specific threshold for Critical severity findings")
+	cmd.Flags().IntVar(&stepConfig.VulnerabilityThresholdHigh, "vulnerabilityThresholdHigh", 100, "The specific threshold for High severity findings")
+	cmd.Flags().IntVar(&stepConfig.VulnerabilityThresholdMedium, "vulnerabilityThresholdMedium", 100, "The specific threshold for Medium severity findings")
+	cmd.Flags().IntVar(&stepConfig.VulnerabilityThresholdLow, "vulnerabilityThresholdLow", 10, "The specific threshold for Low severity findings")
+	cmd.Flags().BoolVar(&stepConfig.VulnerabilityThresholdLowPerQuery, "vulnerabilityThresholdLowPerQuery", false, "Flag to activate/deactivate the threshold of Low severity findings per query")
+	cmd.Flags().IntVar(&stepConfig.VulnerabilityThresholdLowPerQueryMax, "vulnerabilityThresholdLowPerQueryMax", 10, "Upper threshold of Low severity findings per query (in absolute number)")
 	cmd.Flags().StringVar(&stepConfig.VulnerabilityThresholdResult, "vulnerabilityThresholdResult", `FAILURE`, "The result of the build in case thresholds are enabled and exceeded")
 	cmd.Flags().StringVar(&stepConfig.VulnerabilityThresholdUnit, "vulnerabilityThresholdUnit", `percentage`, "The unit for the threshold to apply.")
 	cmd.Flags().BoolVar(&stepConfig.IsOptimizedAndScheduled, "isOptimizedAndScheduled", false, "Whether the pipeline runs in optimized mode and the current execution is a scheduled one")
@@ -429,6 +462,18 @@ func checkmarxOneExecuteScanMetadata() config.StepData {
 			Name:        "checkmarxOneExecuteScan",
 			Aliases:     []config.Alias{},
 			Description: "checkmarxOne is the recommended tool for security scans of JavaScript, iOS, Swift and Ruby code.",
+			Errors: []config.StepError{
+				{
+					Pattern:  "project .* not compliant",
+					Message:  "Project failed compliance checks. Triage security findings in Checkmarx One and fix issues to meet compliance requirements.",
+					Category: "compliance",
+				},
+				{
+					Pattern:  "No APIKey or client_id/client_secret provided",
+					Message:  "Authentication failed. Verify APIKey or client credentials are properly configured.",
+					Category: "authentication",
+				},
+			},
 		},
 		Spec: config.StepSpec{
 			Inputs: config.StepInputs{
@@ -523,6 +568,15 @@ func checkmarxOneExecuteScanMetadata() config.StepData {
 						Mandatory: false,
 						Aliases:   []config.Alias{{Name: "access_token"}},
 						Default:   os.Getenv("PIPER_githubToken"),
+					},
+					{
+						Name:        "scanSummaryInPullRequest",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"PARAMETERS", "STAGES", "STEPS"},
+						Type:        "bool",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     true,
 					},
 					{
 						Name:        "incremental",
@@ -744,6 +798,24 @@ func checkmarxOneExecuteScanMetadata() config.StepData {
 						Default:     os.Getenv("PIPER_applicationName"),
 					},
 					{
+						Name:        "applicationId",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"PARAMETERS", "STAGES", "STEPS"},
+						Type:        "string",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     os.Getenv("PIPER_applicationId"),
+					},
+					{
+						Name:        "projectId",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"PARAMETERS", "STAGES", "STEPS"},
+						Type:        "string",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     os.Getenv("PIPER_projectId"),
+					},
+					{
 						Name: "clientId",
 						ResourceRef: []config.ResourceReference{
 							{
@@ -781,6 +853,15 @@ func checkmarxOneExecuteScanMetadata() config.StepData {
 						Mandatory:   false,
 						Aliases:     []config.Alias{},
 						Default:     true,
+					},
+					{
+						Name:        "vulnerabilityThresholdCritical",
+						ResourceRef: []config.ResourceReference{},
+						Scope:       []string{"PARAMETERS", "STAGES", "STEPS"},
+						Type:        "int",
+						Mandatory:   false,
+						Aliases:     []config.Alias{},
+						Default:     100,
 					},
 					{
 						Name:        "vulnerabilityThresholdHigh",
@@ -891,7 +972,7 @@ func checkmarxOneExecuteScanMetadata() config.StepData {
 						Type: "influx",
 						Parameters: []map[string]interface{}{
 							{"name": "step_data", "fields": []map[string]string{{"name": "checkmarxOne"}}},
-							{"name": "checkmarxOne_data", "fields": []map[string]string{{"name": "high_issues"}, {"name": "high_not_false_postive"}, {"name": "high_not_exploitable"}, {"name": "high_confirmed"}, {"name": "high_urgent"}, {"name": "high_proposed_not_exploitable"}, {"name": "high_to_verify"}, {"name": "medium_issues"}, {"name": "medium_not_false_postive"}, {"name": "medium_not_exploitable"}, {"name": "medium_confirmed"}, {"name": "medium_urgent"}, {"name": "medium_proposed_not_exploitable"}, {"name": "medium_to_verify"}, {"name": "low_issues"}, {"name": "low_not_false_postive"}, {"name": "low_not_exploitable"}, {"name": "low_confirmed"}, {"name": "low_urgent"}, {"name": "low_proposed_not_exploitable"}, {"name": "low_to_verify"}, {"name": "information_issues"}, {"name": "information_not_false_postive"}, {"name": "information_not_exploitable"}, {"name": "information_confirmed"}, {"name": "information_urgent"}, {"name": "information_proposed_not_exploitable"}, {"name": "information_to_verify"}, {"name": "lines_of_code_scanned"}, {"name": "files_scanned"}, {"name": "initiator_name"}, {"name": "owner"}, {"name": "scan_id"}, {"name": "project_id"}, {"name": "projectName"}, {"name": "group"}, {"name": "group_full_path_on_report_date"}, {"name": "scan_start"}, {"name": "scan_time"}, {"name": "tool_version"}, {"name": "scan_type"}, {"name": "preset"}, {"name": "deep_link"}, {"name": "report_creation_time"}}},
+							{"name": "checkmarxOne_data", "fields": []map[string]string{{"name": "critical_issues"}, {"name": "critical_not_false_postive"}, {"name": "critical_not_exploitable"}, {"name": "critical_confirmed"}, {"name": "critical_urgent"}, {"name": "critical_proposed_not_exploitable"}, {"name": "critical_to_verify"}, {"name": "high_issues"}, {"name": "high_not_false_postive"}, {"name": "high_not_exploitable"}, {"name": "high_confirmed"}, {"name": "high_urgent"}, {"name": "high_proposed_not_exploitable"}, {"name": "high_to_verify"}, {"name": "medium_issues"}, {"name": "medium_not_false_postive"}, {"name": "medium_not_exploitable"}, {"name": "medium_confirmed"}, {"name": "medium_urgent"}, {"name": "medium_proposed_not_exploitable"}, {"name": "medium_to_verify"}, {"name": "low_issues"}, {"name": "low_not_false_postive"}, {"name": "low_not_exploitable"}, {"name": "low_confirmed"}, {"name": "low_urgent"}, {"name": "low_proposed_not_exploitable"}, {"name": "low_to_verify"}, {"name": "information_issues"}, {"name": "information_not_false_postive"}, {"name": "information_not_exploitable"}, {"name": "information_confirmed"}, {"name": "information_urgent"}, {"name": "information_proposed_not_exploitable"}, {"name": "information_to_verify"}, {"name": "lines_of_code_scanned"}, {"name": "files_scanned"}, {"name": "initiator_name"}, {"name": "owner"}, {"name": "scan_id"}, {"name": "project_id"}, {"name": "projectName"}, {"name": "group"}, {"name": "group_full_path_on_report_date"}, {"name": "scan_start"}, {"name": "scan_time"}, {"name": "tool_version"}, {"name": "scan_type"}, {"name": "preset"}, {"name": "deep_link"}, {"name": "report_creation_time"}}},
 						},
 					},
 					{

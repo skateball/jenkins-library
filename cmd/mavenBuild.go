@@ -42,7 +42,7 @@ func mavenBuild(config mavenBuildOptions, telemetryData *telemetry.CustomData, c
 }
 
 func runMakeBOMGoal(config *mavenBuildOptions, utils maven.Utils) error {
-	flags := []string{"-update-snapshots", "--batch-mode"}
+	flags := []string{"--update-snapshots", "--batch-mode"}
 	if len(config.Profiles) > 0 {
 		flags = append(flags, "--activate-profiles", strings.Join(config.Profiles, ","))
 	}
@@ -90,7 +90,7 @@ func runMakeBOMGoal(config *mavenBuildOptions, utils maven.Utils) error {
 }
 
 func runMavenBuild(config *mavenBuildOptions, _ *telemetry.CustomData, utils maven.Utils, commonPipelineEnvironment *mavenBuildCommonPipelineEnvironment) error {
-	flags := []string{"-update-snapshots", "--batch-mode"}
+	flags := []string{"--update-snapshots", "--batch-mode"}
 
 	if len(config.Profiles) > 0 {
 		flags = append(flags, "--activate-profiles", strings.Join(config.Profiles, ","))
@@ -221,10 +221,7 @@ func runMavenBuild(config *mavenBuildOptions, _ *telemetry.CustomData, utils mav
 				return err
 			}
 			if config.CreateBuildArtifactsMetadata {
-				err2, done := createBuildArtifactsMetadata(config, commonPipelineEnvironment)
-				if done {
-					return err2
-				}
+				createBuildArtifactsMetadata(config, commonPipelineEnvironment)
 			}
 
 			return nil
@@ -236,7 +233,7 @@ func runMavenBuild(config *mavenBuildOptions, _ *telemetry.CustomData, utils mav
 	return err
 }
 
-func createBuildArtifactsMetadata(config *mavenBuildOptions, commonPipelineEnvironment *mavenBuildCommonPipelineEnvironment) (error, bool) {
+func createBuildArtifactsMetadata(config *mavenBuildOptions, commonPipelineEnvironment *mavenBuildCommonPipelineEnvironment) bool {
 	fileUtils := &piperutils.Files{}
 	buildCoordinates := []versioning.Coordinates{}
 	options := versioning.Options{
@@ -257,9 +254,10 @@ func createBuildArtifactsMetadata(config *mavenBuildOptions, commonPipelineEnvir
 			if err != nil {
 				log.Entry().Warnf("unable to get artifact coordinates : %v", err)
 			} else {
+				component := piperutils.GetComponent(filepath.Join(filepath.Dir(match), "/target/"+mvnSimpleBomFilename+".xml"))
 				coordinate.BuildPath = filepath.Dir(match)
 				coordinate.URL = config.AltDeploymentRepositoryURL
-				coordinate.PURL = piperutils.GetPurl(filepath.Join(filepath.Dir(match), "/target/"+mvnSimpleBomFilename+".xml"))
+				coordinate.PURL = component.Purl
 				buildCoordinates = append(buildCoordinates, coordinate)
 			}
 		}
@@ -267,7 +265,7 @@ func createBuildArtifactsMetadata(config *mavenBuildOptions, commonPipelineEnvir
 
 	if len(buildCoordinates) == 0 {
 		log.Entry().Warnf("unable to identify artifact coordinates for the maven packages published")
-		return nil, true
+		return true
 	}
 
 	var buildArtifacts build.BuildArtifacts
@@ -275,7 +273,7 @@ func createBuildArtifactsMetadata(config *mavenBuildOptions, commonPipelineEnvir
 	buildArtifacts.Coordinates = buildCoordinates
 	jsonResult, _ := json.Marshal(buildArtifacts)
 	commonPipelineEnvironment.custom.mavenBuildArtifacts = string(jsonResult)
-	return nil, false
+	return false
 }
 
 func createOrUpdateProjectSettingsXML(projectSettingsFile string, altDeploymentRepositoryID string, altDeploymentRepositoryUser string, altDeploymentRepositoryPassword string, utils maven.Utils) (string, error) {
